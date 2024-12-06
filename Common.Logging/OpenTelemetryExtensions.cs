@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using System;
 
 namespace Common.Logging
 {
@@ -11,21 +12,35 @@ namespace Common.Logging
         {
             var serviceName = configuration["OpenTelemetry:ServiceName"];
             var jaegerHost = configuration["Jaeger:AgentHost"];
-            var jaegerPort = int.Parse(configuration["Jaeger:AgentPort"]);
+            var jaegerPort = configuration.GetValue<int?>("Jaeger:AgentPort");
 
-            services.AddOpenTelemetry()
-                .WithTracing(builder =>
+            if (string.IsNullOrEmpty(serviceName) || string.IsNullOrEmpty(jaegerHost) || !jaegerPort.HasValue)
+            {
+                throw new ArgumentException("OpenTelemetry configuration is invalid. Please check your settings.");
+            }
+
+           services.AddOpenTelemetry()
+               .WithTracing(builder =>
+            {
+                builder
+                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation()
+                    .AddEntityFrameworkCoreInstrumentation() // EF Core için instrumentasyon
+                    .AddRedisInstrumentation() // Redis için instrumentasyon
+                    .AddJaegerExporter(options =>
+                    {
+                        options.AgentHost = jaegerHost;
+                        options.AgentPort = jaegerPort.Value;
+                    });
+
+                // Hata kontrol mekanizması
+                builder.AddSource(serviceName);
+                builder.Configure(options =>
                 {
-                    builder
-                        .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
-                        .AddAspNetCoreInstrumentation()
-                        .AddHttpClientInstrumentation()
-                        .AddJaegerExporter(options =>
-                        {
-                            options.AgentHost = jaegerHost;
-                            options.AgentPort = jaegerPort;
-                        });
+                    options.ResourceBuilder = ResourceBuilder.CreateDefault().AddService(serviceName);
                 });
+            });
         }
     }
 }
