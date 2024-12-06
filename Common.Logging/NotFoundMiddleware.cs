@@ -1,7 +1,8 @@
 ﻿using Microsoft.AspNetCore.Http;
-using System.Net;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 public class NotFoundMiddleware
 {
@@ -20,7 +21,23 @@ public class NotFoundMiddleware
 
         if (context.Response.StatusCode == (int)HttpStatusCode.NotFound)
         {
-            _logger.LogWarning("404 Not Found - Path: {Path}", context.Request.Path);
+            // Loglama
+            _logger.LogWarning("404 Not Found - Path: {Path}, Method: {Method}, Query: {QueryString}",
+                context.Request.Path,
+                context.Request.Method,
+                context.Request.QueryString);
+
+            // Özelleştirilmiş Yanıt
+            var response = new
+            {
+                StatusCode = context.Response.StatusCode,
+                Message = "The requested resource was not found.",
+                Path = context.Request.Path,
+                Timestamp = DateTime.UtcNow
+            };
+
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
     }
 }
