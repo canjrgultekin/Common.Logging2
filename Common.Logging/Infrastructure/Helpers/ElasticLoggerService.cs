@@ -1,8 +1,9 @@
 ﻿using Nest;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using Common.Logging.Application.Interfaces;
 
-namespace Common.Logging
+namespace Common.Logging.Infrastructure.Helpers
 {
     public class ElasticLoggerService : IElasticLoggerService
     {

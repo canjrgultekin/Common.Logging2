@@ -1,4 +1,7 @@
-﻿using Elasticsearch.Net;
+﻿using Common.Logging.Application.Interfaces;
+using Common.Logging.Infrastructure.Helpers;
+using Common.Logging.Infrastructure.Kafka;
+using Elasticsearch.Net;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -8,7 +11,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Serilog;
 
-namespace Common.Logging
+namespace Common.Logging.Extentions
 {
     public static class ServiceExtensions
     {
@@ -93,7 +96,7 @@ namespace Common.Logging
             });
 
 
-       
+
             services.AddSingleton<IKafkaProducerService, KafkaProducerService>();
             services.AddSingleton<IElasticLoggerService, ElasticLoggerService>();
             services.AddSingleton<IMessageRouter, MessageRouter>();

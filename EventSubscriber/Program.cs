@@ -1,4 +1,5 @@
-using Common.Logging;
+using Common.Logging.Application.Middleware;
+using Common.Logging.Extentions;
 using EventSubscriber;
 using Microsoft.AspNetCore.Builder;
 using Serilog;

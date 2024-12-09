@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 using Polly;
 using Nest;
 using Policy = Polly.Policy;
+using Common.Logging.Application.Interfaces;
 
-namespace Common.Logging
+namespace Common.Logging.Infrastructure.Kafka
 {
     public class KafkaProducerService : IKafkaProducerService, IDisposable
     {
@@ -39,7 +40,7 @@ namespace Common.Logging
                 RetryBackoffMs = _kafkaSettings.Producer.RetryBackoffMs,
                 MessageTimeoutMs = _kafkaSettings.Producer.MessageTimeoutMs,
                 AllowAutoCreateTopics = _kafkaSettings.Producer.AllowAutoCreateTopics
-                
+
             };
 
             _producer = new ProducerBuilder<string, string>(config)
@@ -100,13 +101,13 @@ namespace Common.Logging
 
         private async Task ProduceToKafkaAsync(string topic, string key, string value, CancellationToken cancellationToken)
         {
-            await EnsureTopicExistsAsync(bootstrapServers,topic);
+            await EnsureTopicExistsAsync(bootstrapServers, topic);
 
             await _retryPolicy.ExecuteAsync(async () =>
             {
                 await _circuitBreakerPolicy.ExecuteAsync(async () =>
                 {
-                    
+
 
                     var activity = Activity.Current;
                     var traceId = activity?.TraceId.ToString();
@@ -187,7 +188,7 @@ namespace Common.Logging
                 _logger.LogWarning("Topic creation failed: {Reason}", ex.Results[0].Error.Reason);
             }
         }
-        
+
 
         public void Dispose()
         {

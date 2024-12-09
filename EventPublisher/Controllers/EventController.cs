@@ -1,4 +1,4 @@
-using Common.Logging;
+using Common.Logging.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
 namespace EventPublisher.Controllers

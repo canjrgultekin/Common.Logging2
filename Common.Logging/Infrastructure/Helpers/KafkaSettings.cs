@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Common.Logging.Application.Interfaces;
+using Microsoft.Extensions.Configuration;
 
 namespace Common.Logging
 {

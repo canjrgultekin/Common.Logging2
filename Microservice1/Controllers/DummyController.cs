@@ -1,8 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using OpenTelemetry.Trace;
-using Common.Logging;
 using System.Threading.Tasks;
+using Common.Logging.Application.Interfaces;
 
 namespace Microservice1.Controllers
 {

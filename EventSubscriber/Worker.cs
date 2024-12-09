@@ -1,4 +1,5 @@
-using Common.Logging;
+using Common.Logging.Application.Interfaces;
+using Common.Logging.Infrastructure.Kafka;
 
 namespace EventSubscriber
 {

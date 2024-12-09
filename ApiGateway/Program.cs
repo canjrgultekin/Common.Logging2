@@ -1,7 +1,8 @@
-﻿using Common.Logging;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using OpenTelemetry.Trace;
+using Common.Logging.Application.Middleware;
+using Common.Logging.Extentions;
 
 var builder = WebApplication.CreateBuilder(args);
 

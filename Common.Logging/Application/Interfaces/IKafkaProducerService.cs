@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 
-namespace Common.Logging
+namespace Common.Logging.Application.Interfaces
 {
     public interface IKafkaProducerService
     {

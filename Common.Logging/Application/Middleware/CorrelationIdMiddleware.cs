@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
-namespace Common.Logging
+namespace Common.Logging.Application.Middleware
 {
     public class CorrelationIdMiddleware
     {

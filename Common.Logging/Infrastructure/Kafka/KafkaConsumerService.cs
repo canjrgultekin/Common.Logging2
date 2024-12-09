@@ -1,11 +1,12 @@
-﻿using Confluent.Kafka;
+﻿using Common.Logging.Application.Interfaces;
+using Confluent.Kafka;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Polly;
 using System.Collections.Concurrent;
 using Policy = Polly.Policy;
 
-namespace Common.Logging
+namespace Common.Logging.Infrastructure.Kafka
 {
     public class KafkaConsumerService : BackgroundService, IDisposable
     {
@@ -20,7 +21,7 @@ namespace Common.Logging
             IMessageRouter messageRouter,
             ILogger<KafkaConsumerService> logger)
         {
-          
+
             _logger = logger;
             _messageRouter = messageRouter;
             _topic = _kafkaSettings.Topic ?? "default-topic";
@@ -39,7 +40,7 @@ namespace Common.Logging
                 SslKeyLocation = "",
                 SessionTimeoutMs = _kafkaSettings.Consumer.SessionTimeoutMs > 0 ? _kafkaSettings.Consumer.SessionTimeoutMs : 8000,
                 MaxPollIntervalMs = _kafkaSettings.Consumer.MaxPollIntervalMs > 0 ? _kafkaSettings.Consumer.MaxPollIntervalMs : 300000
-          
+
             };
 
             _consumer = new ConsumerBuilder<string, string>(config)

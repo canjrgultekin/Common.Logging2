@@ -2,7 +2,7 @@
 using Serilog.Events;
 using System.Diagnostics;
 
-namespace Common.Logging
+namespace Common.Logging.Infrastructure.Helpers
 {
     public class OpenTelemetryEnricher : ILogEventEnricher
     {

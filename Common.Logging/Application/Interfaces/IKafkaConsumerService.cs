@@ -2,7 +2,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Common.Logging
+namespace Common.Logging.Application.Interfaces
 {
     public interface IKafkaConsumerService
     {

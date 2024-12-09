@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using OpenTelemetry.Trace;
-using Common.Logging;
+using Common.Logging.Application.Interfaces;
 
 
 namespace ApiGateway.Controllers
