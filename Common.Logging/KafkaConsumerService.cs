@@ -1,182 +1,146 @@
 ﻿using Confluent.Kafka;
-using Confluent.Kafka.Admin;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Nest;
 using Polly;
-using System;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Collections.Concurrent;
+using Policy = Polly.Policy;
 
 namespace Common.Logging
 {
-    public class KafkaConsumerService : IHostedService, IDisposable
+    public class KafkaConsumerService : BackgroundService, IDisposable
     {
         private readonly IConsumer<string, string> _consumer;
         private readonly ILogger<KafkaConsumerService> _logger;
-        private readonly IElasticClient _elasticClient;
+        private readonly IMessageRouter _messageRouter;
         private readonly AsyncPolicy _retryPolicy;
         private readonly AsyncPolicy _circuitBreakerPolicy;
-        private readonly SemaphoreSlim _semaphore;
-        private CancellationTokenSource _cancellationTokenSource;
         private readonly string _topic;
-
         public KafkaConsumerService(
-            IConfiguration configuration,
-            ILogger<KafkaConsumerService> logger,
-            IElasticClient elasticClient)
+            IKafkaSettings _kafkaSettings,
+            IMessageRouter messageRouter,
+            ILogger<KafkaConsumerService> logger)
         {
+          
             _logger = logger;
-            _elasticClient = elasticClient;
-
-            // Kafka yapılandırmasını oku
-            var kafkaConfig = configuration.GetSection("Kafka").Get<IConfigurationSection>();
-            var consumerConfig = kafkaConfig.GetSection("Consumer");
-            // RetryPolicy yapılandırması
-            var maxRetryAttempts = int.Parse(consumerConfig["RetryPolicy:MaxRetryAttempts"]);
-            var baseDelaySeconds = int.Parse(consumerConfig["RetryPolicy:BaseDelaySeconds"]);
-
-            var bootstrapServers = kafkaConfig["BootstrapServers"];
-            var groupId = kafkaConfig["GroupId"];
-            var sslCaLocation = kafkaConfig["SslCaLocation"];
-            var sslCertificateLocation = kafkaConfig["SslCertificateLocation"];
-            var sslKeyLocation = kafkaConfig["SslKeyLocation"];
-            var autoOffsetReset = consumerConfig["AutoOffsetReset"];
-            var sessionTimeoutMs = int.Parse(consumerConfig["SessionTimeoutMs"]);
-            var maxPollIntervalMs = int.Parse(consumerConfig["MaxPollIntervalMs"]);
-
-            _topic = kafkaConfig["Topic"] ?? "default-topic";
-
-            // CircuitBreaker yapılandırması
-            var failureThreshold = int.Parse(consumerConfig["CircuitBreaker:FailureThreshold"]);
-            var durationOfBreakSeconds = int.Parse(consumerConfig["CircuitBreaker:DurationOfBreakSeconds"]);
-
+            _messageRouter = messageRouter;
+            _topic = _kafkaSettings.Topic ?? "default-topic";
 
             var config = new ConsumerConfig
             {
-                BootstrapServers = bootstrapServers,
-                GroupId = groupId,
-                AutoOffsetReset = autoOffsetReset == "Earliest" ? AutoOffsetReset.Earliest : AutoOffsetReset.Latest,
-                SecurityProtocol = string.IsNullOrEmpty(sslCaLocation) ? SecurityProtocol.Plaintext : SecurityProtocol.Ssl,
-                SslCaLocation = sslCaLocation,
-                SslCertificateLocation = sslCertificateLocation,
-                SslKeyLocation = sslKeyLocation,
-                SessionTimeoutMs = sessionTimeoutMs,
-                MaxPollIntervalMs = maxPollIntervalMs
+                BootstrapServers = _kafkaSettings.BootstrapServers,
+                GroupId = _kafkaSettings.GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                SecurityProtocol = SecurityProtocol.Plaintext, // SASL düz metin
+                MessageMaxBytes = 10485760, // 10MB
+                SocketReceiveBufferBytes = 10485760, // 10MB
+                SocketSendBufferBytes = 10485760,     // 10MB
+                SslCaLocation = "",
+                SslCertificateLocation = "",
+                SslKeyLocation = "",
+                SessionTimeoutMs = _kafkaSettings.Consumer.SessionTimeoutMs > 0 ? _kafkaSettings.Consumer.SessionTimeoutMs : 8000,
+                MaxPollIntervalMs = _kafkaSettings.Consumer.MaxPollIntervalMs > 0 ? _kafkaSettings.Consumer.MaxPollIntervalMs : 300000
+          
             };
-            
+
             _consumer = new ConsumerBuilder<string, string>(config)
-                .SetErrorHandler((_, error) =>
-                {
-                    _logger.LogError($"Kafka error: {error.Reason}");
-                })
+                .SetErrorHandler((_, error) => _logger.LogError($"Kafka error: {error.Reason}"))
                 .Build();
 
-            _retryPolicy = Polly.Policy
+            // Retry Policy
+            _retryPolicy = Policy
                 .Handle<Exception>()
-                .WaitAndRetryAsync(maxRetryAttempts, retryAttempt => TimeSpan.FromSeconds(Math.Pow(baseDelaySeconds, retryAttempt)),
+                .WaitAndRetryAsync(_kafkaSettings.Consumer.RetryPolicy.MaxRetryAttempts, retryAttempt => TimeSpan.FromSeconds(Math.Pow(_kafkaSettings.Consumer.RetryPolicy.BaseDelaySeconds, retryAttempt)),
                     (exception, timeSpan, retryCount, context) =>
                     {
                         _logger.LogWarning($"Retry {retryCount} for KafkaConsumer: {exception.Message}");
                     });
 
-            _circuitBreakerPolicy = Polly.Policy
+            // Circuit Breaker Policy
+            _circuitBreakerPolicy = Policy
                 .Handle<Exception>()
-                .CircuitBreakerAsync(failureThreshold, TimeSpan.FromSeconds(durationOfBreakSeconds),
+                .CircuitBreakerAsync(_kafkaSettings.Consumer.CircuitBreaker.FailureThreshold, TimeSpan.FromSeconds(_kafkaSettings.Consumer.CircuitBreaker.DurationOfBreakSeconds),
                     onBreak: (exception, duration) =>
                     {
                         _logger.LogError($"Circuit broken for KafkaConsumer: {exception.Message}. Duration: {duration.TotalSeconds} seconds.");
                     },
-                    onReset: () =>
-                    {
-                        _logger.LogInformation("Circuit reset for KafkaConsumer.");
-                    },
-                    onHalfOpen: () =>
-                    {
-                        _logger.LogWarning("Circuit is half-open for KafkaConsumer.");
-                    });
-
-            var semaphoreLimit = int.Parse(consumerConfig["SemaphoreLimit"]);
-            _semaphore = new SemaphoreSlim(semaphoreLimit);
-
-            EnsureTopicExists(config.BootstrapServers, _topic).Wait();
+                    onReset: () => _logger.LogInformation("Circuit reset for KafkaConsumer."),
+                    onHalfOpen: () => _logger.LogWarning("Circuit is half-open for KafkaConsumer."));
         }
 
-        public Task StartAsync(CancellationToken cancellationToken)
-        {
-            _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            Task.Run(() => StartConsuming(_cancellationTokenSource.Token), cancellationToken);
-            return Task.CompletedTask;
-        }
-
-        public Task StopAsync(CancellationToken cancellationToken)
-        {
-            _cancellationTokenSource.Cancel();
-            _consumer.Close();
-            return Task.CompletedTask;
-        }
-
-        private async Task StartConsuming(CancellationToken cancellationToken)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _consumer.Subscribe(_topic);
+            _logger.LogInformation($"KafkaConsumerService started listening on topic: {_topic}");
 
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                await _retryPolicy.ExecuteAsync(async () =>
-                {
-                    await _circuitBreakerPolicy.ExecuteAsync(async () =>
-                    {
-                        var result = _consumer.Consume(cancellationToken);
-                        await ProcessMessage(result.Message.Value);
-                    });
-                });
-            }
-        }
+            var tasks = new ConcurrentBag<Task>();
 
-        private async Task ProcessMessage(string message)
-        {
-            await _semaphore.WaitAsync(); // Memory-safe kontrol
             try
             {
-                var log = new { Message = message, Timestamp = DateTime.UtcNow };
-                _logger.LogInformation("Processing message: {Message}", message);
-                await _elasticClient.IndexDocumentAsync(log);
-            }
-            finally
-            {
-                _semaphore.Release();
-            }
-        }
-
-        private async Task EnsureTopicExists(string bootstrapServers, string topicName)
-        {
-            var config = new AdminClientConfig { BootstrapServers = bootstrapServers };
-            using var adminClient = new AdminClientBuilder(config).Build();
-            try
-            {
-                var metadata = adminClient.GetMetadata(TimeSpan.FromSeconds(10));
-                if (!metadata.Topics.Any(t => t.Topic == topicName))
+                while (!stoppingToken.IsCancellationRequested)
                 {
-                    await adminClient.CreateTopicsAsync(new[]
+                    await _retryPolicy.ExecuteAsync(async () =>
                     {
-                        new TopicSpecification { Name = topicName, NumPartitions = 3, ReplicationFactor = 1 }
+                        await _circuitBreakerPolicy.ExecuteAsync(async () =>
+                        {
+                            // Kafka'dan mesaj al
+                            var result = _consumer.Consume(stoppingToken);
+                            if (result != null)
+                            {
+                                _logger.LogInformation("Message received: {Value} on topic: {Topic}", result.Message.Value, result.Topic);
+
+                                // Mesajı MessageRouter üzerinden yönlendir
+                                tasks.Add(Task.Run(() =>
+                                    _messageRouter.RouteMessageAsync(
+                                        topic: result.Topic,
+                                        key: result.Message.Key,
+                                        value: result.Message.Value,
+                                        cancellationToken: stoppingToken
+                                    )));
+                            }
+                        });
                     });
-                    _logger.LogInformation("Topic '{TopicName}' created successfully.", topicName);
+                }
+
+                // Tüm task'lerin tamamlanmasını bekle
+                await Task.WhenAll(tasks);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("KafkaConsumerService is stopping.");
+            }
+            //finally
+            //{
+            //    _consumer.Close();
+            //}
+        }
+        public async Task<IEnumerable<(string Key, string Value)>> ConsumeAndProcessMessagesAsync(CancellationToken stoppingToken)
+        {
+            var results = new List<(string Key, string Value)>();
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                var result = _consumer.Consume(stoppingToken);
+                if (result != null)
+                {
+                    _logger.LogInformation("Message received: {Value} on topic: {Topic}", result.Message.Value, result.Topic);
+
+                    // Gelen mesajı işleme
+                    if (result.Message.Key == "events")
+                    {
+                        _logger.LogInformation("Key 'events' matched.");
+
+                        // Örneğin: İşlenen mesajı listeye ekleyelim
+                        results.Add((result.Message.Key, result.Message.Value));
+                    }
                 }
             }
-            catch (CreateTopicsException ex)
-            {
-                _logger.LogWarning("Topic creation failed: {Reason}", ex.Results[0].Error.Reason);
-            }
-        }
 
-        public void Dispose()
+            return results; // İşlenmiş mesajları döndür
+        }
+        public override void Dispose()
         {
-            _cancellationTokenSource?.Dispose();
+            base.Dispose();
             _consumer?.Dispose();
-            _semaphore?.Dispose();
         }
     }
 }

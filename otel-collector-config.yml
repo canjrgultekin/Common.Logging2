@@ -5,6 +5,8 @@ receivers:
       http:
 
 exporters:
+  zipkin:
+    endpoint: "http://zipkin:9411/api/v2/spans"
   otlp:
     endpoint: "http://otel-collector:4317"
   debug: 
@@ -19,7 +21,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp, debug]
+      exporters: [zipkin, otlp, debug]
     metrics:
       receivers: [otlp]
       processors: [batch]

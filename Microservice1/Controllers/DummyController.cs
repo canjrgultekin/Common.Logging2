@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using OpenTelemetry.Trace;
 using Common.Logging;
+using System.Threading.Tasks;
 
 namespace Microservice1.Controllers
 {
@@ -10,12 +11,12 @@ namespace Microservice1.Controllers
     public class DummyController : ControllerBase
     {
         private readonly Tracer _tracer;
-        private readonly KafkaProducerService _kafkaProducer;
+        private readonly IMessageRouter _messageRouter; // IKafkaProducerService yerine IMessageRouter
 
-        public DummyController(TracerProvider tracerProvider, KafkaProducerService kafkaProducer)
+        public DummyController(TracerProvider tracerProvider, IMessageRouter messageRouter)
         {
             _tracer = tracerProvider.GetTracer("Microservice1");
-            _kafkaProducer = kafkaProducer;
+            _messageRouter = messageRouter; // IKafkaProducerService yerine IMessageRouter
         }
 
         [HttpGet]
@@ -30,14 +31,14 @@ namespace Microservice1.Controllers
                 var data = new { Message = "Hello from Microservice1" };
 
                 // Log to Kafka
-                await _kafkaProducer.ProduceAsync("logs-topic", "info", $"Dummy data retrieved successfully: {data}");
+                await _messageRouter.RouteMessageAsync("logs-topic", "info", $"Dummy data retrieved successfully: {data}", CancellationToken.None);
 
                 return Ok(data);
             }
             catch (Exception ex)
             {
                 // Log exception to Kafka
-                await _kafkaProducer.ProduceAsync("logs-topic", "error", ex.Message);
+                await _messageRouter.RouteMessageAsync("logs-topic", "error", ex.Message, CancellationToken.None);
 
                 span.SetStatus(Status.Error.WithDescription(ex.Message));
                 throw;

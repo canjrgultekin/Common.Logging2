@@ -1,6 +1,14 @@
 version: '3.8'
 
 services:
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - mynetwork
+      
   kafka:
     image: confluentinc/cp-kafka:latest
     ports:
@@ -35,8 +43,6 @@ services:
       - "9200:9200"
     networks:
       - mynetwork
-    volumes:
-      - esdata:/usr/share/elasticsearch/data
 
   kibana:
     image: docker.elastic.co/kibana/kibana:7.9.3
@@ -87,6 +93,44 @@ services:
       - otel-collector
     networks:
       - mynetwork
+
+  eventpublisher:
+    image: eventpublisher
+    build:
+      context: .
+      dockerfile: EventPublisher/Dockerfile
+    ports:
+      - "5003:80"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      - kafka
+      - jaeger
+      - zookeeper
+      - elasticsearch
+      - kibana
+      - otel-collector
+    networks:
+      - mynetwork
+      
+  eventsubscriber:
+    image: eventsubscriber
+    build:
+      context: .
+      dockerfile: EventSubscriber/Dockerfile
+    ports:
+      - "5004:80"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      - jaeger
+      - kafka
+      - zookeeper
+      - elasticsearch
+      - kibana
+      - otel-collector
+    networks:
+      - mynetwork
       
   otel-collector:
     image: otel/opentelemetry-collector:latest
@@ -111,5 +155,3 @@ networks:
   mynetwork:
     driver: bridge
     
-volumes:
-  esdata:

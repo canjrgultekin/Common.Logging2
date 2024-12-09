@@ -1,7 +1,6 @@
-ï»¿using Common.Logging;
-using Microsoft.Extensions.DependencyInjection;
+using Common.Logging;
 using Serilog;
-using OpenTelemetry.Trace;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,7 +23,7 @@ builder.Services.AddHttpClient();
 var app = builder.Build();
 
 // Middleware configuration
-app.UseSerilogRequestLogging(); // Serilog middleware'i baÅŸta Ã§aÄŸÄ±rÄ±n
+app.UseSerilogRequestLogging(); // Serilog middleware'i baþta çaðýrýn
 app.UseMiddleware<CorrelationIdMiddleware>(); // Add Correlation ID Middleware
 app.UseMiddleware<NotFoundMiddleware>(); // Add NotFound Middleware
 

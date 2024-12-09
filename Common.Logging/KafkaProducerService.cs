@@ -1,56 +1,45 @@
-﻿using System;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Polly;
-using static Confluent.Kafka.ConfigPropertyNames;
+using Nest;
+using Policy = Polly.Policy;
 
 namespace Common.Logging
 {
-    public class KafkaProducerService : IDisposable
+    public class KafkaProducerService : IKafkaProducerService, IDisposable
     {
         private readonly IProducer<string, string> _producer;
         private readonly ILogger<KafkaProducerService> _logger;
         private readonly AsyncPolicy _retryPolicy;
         private readonly AsyncPolicy _circuitBreakerPolicy;
-
-        public KafkaProducerService(IConfiguration configuration, ILogger<KafkaProducerService> logger)
+        private readonly IElasticClient _elasticClient;
+        private bool _disposed;
+        private string bootstrapServers;
+        public KafkaProducerService(
+            IKafkaSettings _kafkaSettings,
+            IElasticClient elasticClient,
+            ILogger<KafkaProducerService> logger)
         {
+            _elasticClient = elasticClient;
             _logger = logger;
-
-            // Kafka yapılandırmasını oku
-            var kafkaConfig = configuration.GetSection("Kafka").Get<IConfigurationSection>();
-            var producerConfig = kafkaConfig.GetSection("Producer");
-
-            var bootstrapServers = kafkaConfig["BootstrapServers"];
-            var sslCaLocation = kafkaConfig["SslCaLocation"];
-            var sslCertificateLocation = kafkaConfig["SslCertificateLocation"];
-            var sslKeyLocation = kafkaConfig["SslKeyLocation"];
-            var retryBackoffMs = int.Parse(producerConfig["RetryBackoffMs"]);
-            var messageTimeoutMs = int.Parse(producerConfig["MessageTimeoutMs"]);
-
-            // RetryPolicy yapılandırması
-            var maxRetryAttempts = int.Parse(producerConfig["RetryPolicy:MaxRetryAttempts"]);
-            var baseDelaySeconds = int.Parse(producerConfig["RetryPolicy:BaseDelaySeconds"]);
-
-            // CircuitBreaker yapılandırması
-            var failureThreshold = int.Parse(producerConfig["CircuitBreaker:FailureThreshold"]);
-            var durationOfBreakSeconds = int.Parse(producerConfig["CircuitBreaker:DurationOfBreakSeconds"]);
-
+            bootstrapServers = _kafkaSettings.BootstrapServers;
             var config = new ProducerConfig
             {
-                BootstrapServers = bootstrapServers,
-                SecurityProtocol = string.IsNullOrEmpty(sslCaLocation) ? SecurityProtocol.Plaintext : SecurityProtocol.Ssl,
-                SslCaLocation = sslCaLocation,
-                SslCertificateLocation = sslCertificateLocation,
-                SslKeyLocation = sslKeyLocation,
-                RetryBackoffMs = retryBackoffMs,
-                MessageTimeoutMs = messageTimeoutMs
+                BootstrapServers = _kafkaSettings.BootstrapServers,
+                SecurityProtocol = SecurityProtocol.Plaintext, // SASL düz metin
+                MessageMaxBytes = 10485760, // 10MB
+                SocketReceiveBufferBytes = 10485760, // 10MB
+                SocketSendBufferBytes = 10485760,     // 10MB
+                SslCaLocation = "",
+                SslCertificateLocation = "",
+                SslKeyLocation = "",
+                RetryBackoffMs = _kafkaSettings.Producer.RetryBackoffMs,
+                MessageTimeoutMs = _kafkaSettings.Producer.MessageTimeoutMs,
+                AllowAutoCreateTopics = _kafkaSettings.Producer.AllowAutoCreateTopics
+                
             };
 
             _producer = new ProducerBuilder<string, string>(config)
@@ -63,8 +52,8 @@ namespace Common.Logging
             // Retry Policy
             _retryPolicy = Policy
                 .Handle<ProduceException<string, string>>()
-                .WaitAndRetryAsync(maxRetryAttempts,
-                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(baseDelaySeconds, retryAttempt)),
+                .WaitAndRetryAsync(_kafkaSettings.Producer.RetryPolicy.MaxRetryAttempts,
+                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(_kafkaSettings.Producer.RetryPolicy.BaseDelaySeconds, retryAttempt)),
                     (exception, timeSpan, retryCount, context) =>
                     {
                         _logger.LogWarning($"Retry {retryCount} for KafkaProducer: {exception.Message}");
@@ -73,7 +62,7 @@ namespace Common.Logging
             // Circuit Breaker Policy
             _circuitBreakerPolicy = Policy
                 .Handle<ProduceException<string, string>>()
-                .CircuitBreakerAsync(failureThreshold, TimeSpan.FromSeconds(durationOfBreakSeconds),
+                .CircuitBreakerAsync(_kafkaSettings.Producer.CircuitBreaker.FailureThreshold, TimeSpan.FromSeconds(_kafkaSettings.Producer.CircuitBreaker.DurationOfBreakSeconds),
                     onBreak: (exception, duration) =>
                     {
                         _logger.LogError($"Circuit broken for KafkaProducer: {exception.Message}. Duration: {duration.TotalSeconds} seconds.");
@@ -86,21 +75,44 @@ namespace Common.Logging
                     {
                         _logger.LogWarning("Circuit is half-open for KafkaProducer.");
                     });
-
-            EnsureTopicExists(config.BootstrapServers, configuration["Kafka:Topic"] ?? "default-topic").Wait();
         }
 
-        public async Task ProduceAsync(string topic, string key, string value)
+        public async Task ProcessMessageAsync(
+            string mode, // "log" veya "event" seçimi
+            string topicOrIndex, // Kafka topic veya Elasticsearch index
+            string key,
+            string value,
+            CancellationToken cancellationToken)
         {
+            if (mode == "log")
+            {
+                await LogToElasticSearchAsync(topicOrIndex, value, cancellationToken);
+            }
+            else if (mode == "event")
+            {
+                await ProduceToKafkaAsync(topicOrIndex, key, value, cancellationToken);
+            }
+            else
+            {
+                _logger.LogWarning("Invalid mode specified: {Mode}", mode);
+            }
+        }
+
+        private async Task ProduceToKafkaAsync(string topic, string key, string value, CancellationToken cancellationToken)
+        {
+            await EnsureTopicExistsAsync(bootstrapServers,topic);
+
             await _retryPolicy.ExecuteAsync(async () =>
             {
                 await _circuitBreakerPolicy.ExecuteAsync(async () =>
                 {
+                    
+
                     var activity = Activity.Current;
                     var traceId = activity?.TraceId.ToString();
                     var spanId = activity?.SpanId.ToString();
 
-                    var logMessage = new
+                    var message = new
                     {
                         Message = value,
                         TraceId = traceId,
@@ -111,7 +123,7 @@ namespace Common.Logging
                     var kafkaMessage = new Message<string, string>
                     {
                         Key = key,
-                        Value = JsonSerializer.Serialize(logMessage)
+                        Value = JsonSerializer.Serialize(message)
                     };
 
                     var result = await _producer.ProduceAsync(topic, kafkaMessage);
@@ -124,7 +136,37 @@ namespace Common.Logging
             });
         }
 
-        private async Task EnsureTopicExists(string bootstrapServers, string topicName)
+        private async Task LogToElasticSearchAsync(string index, string message, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(index))
+            {
+                throw new ArgumentException("Index cannot be null or empty.", nameof(index));
+            }
+
+            var traceId = Activity.Current?.TraceId.ToString() ?? "UnknownTraceId";
+            var spanId = Activity.Current?.SpanId.ToString() ?? "UnknownSpanId";
+
+            var logDocument = new
+            {
+                Message = message,
+                TraceId = traceId,
+                SpanId = spanId,
+                Timestamp = DateTime.UtcNow
+            };
+
+            var response = await _elasticClient.IndexAsync(logDocument, i => i.Index(index), cancellationToken);
+
+            if (!response.IsValid)
+            {
+                var errorMessage = response.OriginalException?.Message ?? "Unknown error";
+                _logger.LogError("Failed to log message to Elasticsearch: {Error}", errorMessage);
+                throw new Exception($"Elasticsearch log failed: {errorMessage}", response.OriginalException);
+            }
+
+            _logger.LogInformation("Message successfully logged to Elasticsearch index: {Index}", index);
+        }
+
+        private async Task EnsureTopicExistsAsync(string bootstrapServers, string topicName)
         {
             var config = new AdminClientConfig { BootstrapServers = bootstrapServers };
             using var adminClient = new AdminClientBuilder(config).Build();
@@ -145,10 +187,15 @@ namespace Common.Logging
                 _logger.LogWarning("Topic creation failed: {Reason}", ex.Results[0].Error.Reason);
             }
         }
+        
 
         public void Dispose()
         {
-            _producer?.Dispose();
+            if (!_disposed)
+            {
+                _producer?.Dispose();
+                _disposed = true;
+            }
         }
     }
 }

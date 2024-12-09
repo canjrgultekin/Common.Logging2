@@ -1,9 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using System.Threading.Tasks;
 using OpenTelemetry.Trace;
-using System.Diagnostics;
 using Common.Logging;
-using System.Net.Http;
+
 
 namespace ApiGateway.Controllers
 {
@@ -13,20 +11,18 @@ namespace ApiGateway.Controllers
     {
         private readonly HttpClient _httpClient;
         private readonly Tracer _tracer;
-        private readonly KafkaProducerService _kafkaProducer;
+        private readonly IMessageRouter _messageRouter; // IKafkaProducerService yerine IMessageRouter
         private readonly IConfiguration _configuration;
 
-
-        public GatewayController(HttpClient httpClient,TracerProvider tracerProvider, KafkaProducerService kafkaProducer,IConfiguration configuration)
+        public GatewayController(HttpClient httpClient, TracerProvider tracerProvider, IMessageRouter messageRouter, IConfiguration configuration)
         {
             _httpClient = httpClient;
             _tracer = tracerProvider.GetTracer("ApiGateway");
-            _kafkaProducer = kafkaProducer;
+            _messageRouter = messageRouter; // IKafkaProducerService yerine IMessageRouter
             _configuration = configuration;
+        }
 
-    }
-
-    [HttpGet]
+        [HttpGet]
         [Route("getdata")]
         public async Task<IActionResult> GetData()
         {
@@ -34,7 +30,6 @@ namespace ApiGateway.Controllers
 
             try
             {
-
                 var microservice1BaseUrl = _configuration["Microservice1:BaseUrl"];
                 var response = await _httpClient.GetAsync($"{microservice1BaseUrl}/api/dummy/getdata");
                 response.EnsureSuccessStatusCode();
@@ -43,15 +38,15 @@ namespace ApiGateway.Controllers
 
                 var data = await response.Content.ReadAsStringAsync();
 
-                // Log to Kafka
-                await _kafkaProducer.ProduceAsync("logs-topic", "info", $"Data retrieved successfully from Microservice1: {data}");
+                // Kafka'ya log kaydını gönder
+                await _messageRouter.RouteMessageAsync("logs-topic", "info", $"Data retrieved successfully from Microservice1: {data}", CancellationToken.None);
 
                 return Ok(data);
             }
             catch (Exception ex)
             {
-                // Log exception to Kafka
-                await _kafkaProducer.ProduceAsync("logs-topic", "error", ex.Message);
+                // Hata durumunda Kafka'ya log kaydını gönder
+                await _messageRouter.RouteMessageAsync("logs-topic", "error", ex.Message, CancellationToken.None);
 
                 span.SetStatus(Status.Error.WithDescription(ex.Message));
                 throw;
